@@ -1,0 +1,8 @@
+.git
+node_modules
+src
+scripts
+*.vsix
+pnpm-lock.yaml
+.pnpm-approve-builds.json
+tsconfig.json

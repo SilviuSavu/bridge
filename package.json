@@ -1,0 +1,78 @@
+{
+  "name": "vscode-mcp-bridge",
+  "displayName": "VSCode MCP Bridge",
+  "version": "4.7.0",
+  "description": "Bridge between VS Code language servers and MCP clients over Unix socket",
+  "publisher": "YuTengjing",
+  "private": true,
+  "license": "MIT",
+  "main": "./out/src/extension.js",
+  "icon": "assets/logo.png",
+  "engines": {
+    "vscode": "^1.102.0"
+  },
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "configuration": {
+      "type": "object",
+      "title": "VSCode MCP Bridge",
+      "properties": {
+        "vscode-mcp-bridge.enableLog": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable logging for VSCode MCP Bridge operations"
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "vscode-mcp-bridge.sleep",
+        "title": "Sleep",
+        "category": "VSCode MCP Bridge"
+      },
+      {
+        "command": "vscode-mcp-bridge.copyOpenedFilesPath",
+        "title": "Copy Opened Files Path",
+        "category": "VSCode MCP Bridge"
+      },
+      {
+        "command": "vscode-mcp-bridge.copyCurrentSelectionReference",
+        "title": "Copy Current Selection Reference",
+        "category": "VSCode MCP Bridge"
+      }
+    ],
+    "keybindings": [
+      {
+        "key": "alt+cmd+o",
+        "command": "vscode-mcp-bridge.copyOpenedFilesPath",
+        "args": {
+          "isSendToActiveTerminal": true,
+          "includeAtSymbol": true,
+          "addQuotes": false,
+          "focusTerminal": true
+        }
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "pnpm esbuild:base --minify",
+    "clean": "npx rimraf -rf ./out",
+    "esbuild:base": "node scripts/esbuild.mjs",
+    "esbuild:watch": "node scripts/esbuild.mjs --sourcemap --watch",
+    "typecheck": "tsc --noEmit -p src/tsconfig.json",
+    "build": "node scripts/esbuild.mjs",
+    "package": "vsce package --no-dependencies",
+    "lint": "tsc --noEmit -p src/tsconfig.json"
+  },
+  "dependencies": {
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/vscode": "1.102.0",
+    "@vscode/vsce": "^3.7.1",
+    "esbuild": "~0.27.3",
+    "rimraf": "^6.1.3"
+  }
+}
