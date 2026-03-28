@@ -410,3 +410,202 @@ export const getTypeHierarchyResult = z.object({
   supertypes: z.array(TypeHierarchyItemSchema).optional(),
   subtypes: z.array(TypeHierarchyItemSchema).optional(),
 }).strict();
+
+// ══════════════════════════════════════════════════════════════════════
+//                         DEBUG (DAP) SCHEMAS
+// ══════════════════════════════════════════════════════════════════════
+
+// ── debugGetState ─────────────────────────────────────────────────────
+
+export const debugGetStatePayload = z.object({}).strict();
+export const debugGetStateResult = z.object({
+  status: z.enum(["running", "stopped", "noSession"]),
+  sessionId: z.string().optional(),
+  sessionName: z.string().optional(),
+  stoppedThreadId: z.number().optional(),
+  stoppedReason: z.string().optional(),
+  stoppedFile: z.string().optional(),
+  stoppedLine: z.number().optional(),
+}).strict();
+
+// ── debugStart ────────────────────────────────────────────────────────
+
+export const debugStartPayload = z.object({
+  name: z.string().optional().describe("Debug session name"),
+  type: z.string().optional().describe("Debug adapter type (e.g. node, lldb, python, cppdbg)"),
+  request: z.enum(["launch", "attach"]).optional().default("launch"),
+  program: z.string().optional().describe("Program to debug"),
+  args: z.array(z.string()).optional().describe("Program arguments"),
+  cwd: z.string().optional().describe("Working directory"),
+  env: z.record(z.string()).optional().describe("Environment variables"),
+  config: z.record(z.unknown()).optional().describe("Full launch config (overrides other fields)"),
+  noDebug: z.boolean().optional().describe("Run without debugging"),
+}).strict();
+
+export const debugStartResult = z.object({
+  success: z.boolean(),
+  sessionId: z.string().optional(),
+  sessionName: z.string().optional(),
+  error: z.string().optional(),
+}).strict();
+
+// ── debugStop ─────────────────────────────────────────────────────────
+
+export const debugStopPayload = z.object({}).strict();
+export const debugStopResult = z.object({
+  success: z.boolean(),
+  error: z.string().optional(),
+}).strict();
+
+// ── debugSetBreakpoints ───────────────────────────────────────────────
+
+export const debugSetBreakpointsPayload = z.object({
+  filePath: FilePath,
+  breakpoints: z.array(z.object({
+    line: z.number().describe("0-indexed line number"),
+    condition: z.string().optional().describe("Conditional expression"),
+    hitCondition: z.string().optional().describe("Hit count condition"),
+    logMessage: z.string().optional().describe("Log message (logpoint)"),
+  }).strict()),
+}).strict();
+
+export const debugSetBreakpointsResult = z.object({
+  breakpoints: z.array(z.object({
+    line: z.number(),
+    verified: z.boolean(),
+    condition: z.string().optional(),
+  }).strict()),
+}).strict();
+
+// ── debugGetBreakpoints ───────────────────────────────────────────────
+
+export const debugGetBreakpointsPayload = z.object({
+  filePath: FilePath.optional(),
+}).strict();
+
+export const debugGetBreakpointsResult = z.object({
+  breakpoints: z.array(z.object({
+    filePath: z.string(),
+    line: z.number(),
+    enabled: z.boolean(),
+    condition: z.string().optional(),
+    hitCondition: z.string().optional(),
+    logMessage: z.string().optional(),
+  }).strict()),
+}).strict();
+
+// ── debugRemoveAllBreakpoints ─────────────────────────────────────────
+
+export const debugRemoveAllBreakpointsPayload = z.object({
+  filePath: FilePath.optional(),
+}).strict();
+
+export const debugRemoveAllBreakpointsResult = z.object({
+  removed: z.number(),
+}).strict();
+
+// ── debugContinue / stepOver / stepInto / stepOut / pause ──────────────
+
+export const debugThreadActionPayload = z.object({
+  threadId: z.number().optional().describe("Thread ID (defaults to first thread)"),
+}).strict();
+
+export const debugThreadActionResult = z.object({
+  success: z.boolean(),
+  error: z.string().optional(),
+}).strict();
+
+// ── debugGetThreads ───────────────────────────────────────────────────
+
+export const debugGetThreadsPayload = z.object({}).strict();
+export const debugGetThreadsResult = z.object({
+  threads: z.array(z.object({
+    id: z.number(),
+    name: z.string(),
+  }).strict()),
+}).strict();
+
+// ── debugGetStackTrace ────────────────────────────────────────────────
+
+export const debugGetStackTracePayload = z.object({
+  threadId: z.number(),
+  startFrame: z.number().optional().default(0),
+  levels: z.number().optional().default(20),
+}).strict();
+
+export const debugGetStackTraceResult = z.object({
+  stackFrames: z.array(z.object({
+    id: z.number(),
+    name: z.string(),
+    source: z.string().optional(),
+    line: z.number(),
+    column: z.number(),
+  }).strict()),
+  totalFrames: z.number(),
+}).strict();
+
+// ── debugGetScopes ────────────────────────────────────────────────────
+
+export const debugGetScopesPayload = z.object({
+  frameId: z.number(),
+}).strict();
+
+export const debugGetScopesResult = z.object({
+  scopes: z.array(z.object({
+    name: z.string(),
+    variablesReference: z.number(),
+    expensive: z.boolean(),
+    namedVariables: z.number().optional(),
+    indexedVariables: z.number().optional(),
+  }).strict()),
+}).strict();
+
+// ── debugGetVariables ─────────────────────────────────────────────────
+
+export const debugGetVariablesPayload = z.object({
+  variablesReference: z.number(),
+  filter: z.enum(["indexed", "named"]).optional(),
+  start: z.number().optional(),
+  count: z.number().optional(),
+}).strict();
+
+export const debugGetVariablesResult = z.object({
+  variables: z.array(z.object({
+    name: z.string(),
+    value: z.string(),
+    type: z.string().optional(),
+    variablesReference: z.number(),
+    namedVariables: z.number().optional(),
+    indexedVariables: z.number().optional(),
+  }).strict()),
+}).strict();
+
+// ── debugEvaluate ─────────────────────────────────────────────────────
+
+export const debugEvaluatePayload = z.object({
+  expression: z.string(),
+  frameId: z.number().optional(),
+  context: z.enum(["watch", "repl", "hover"]).optional().default("repl"),
+}).strict();
+
+export const debugEvaluateResult = z.object({
+  result: z.string(),
+  type: z.string().optional(),
+  variablesReference: z.number(),
+  namedVariables: z.number().optional(),
+  indexedVariables: z.number().optional(),
+}).strict();
+
+// ── debugWaitForEvent ─────────────────────────────────────────────────
+
+export const debugWaitForEventPayload = z.object({
+  timeoutMs: z.number().optional().default(30000).describe("Timeout in milliseconds"),
+}).strict();
+
+export const debugWaitForEventResult = z.object({
+  event: z.enum(["stopped", "terminated", "timeout", "noSession", "disposed"]),
+  threadId: z.number().optional(),
+  reason: z.string().optional(),
+  file: z.string().optional(),
+  line: z.number().optional(),
+}).strict();

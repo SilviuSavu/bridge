@@ -5,8 +5,11 @@ import { SocketServer } from "./socket-server";
 import { sleep, copyOpenedFilesPath, copyCurrentSelectionReference } from "./commands";
 import * as schemas from "./schemas";
 import * as handlers from "./handlers";
+import * as debugHandlers from "./debug-handlers";
+import { DebugStateManager } from "./debug-manager";
 
 let server: SocketServer | undefined;
+let debugManager: DebugStateManager | undefined;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   logger.info("VSCode MCP Bridge extension is being activated");
@@ -20,6 +23,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   try {
     server = new SocketServer(workspace);
+
+    // Initialize debug manager
+    debugManager = new DebugStateManager();
+    debugHandlers.setDebugManager(debugManager);
 
     // Register all RPC handlers — original
     server.register("health", { handler: handlers.healthHandler, payloadSchema: schemas.healthPayload, resultSchema: schemas.healthResult });
@@ -45,6 +52,25 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     server.register("getCompletions", { handler: handlers.getCompletionsHandler, payloadSchema: schemas.getCompletionsPayload, resultSchema: schemas.getCompletionsResult });
     server.register("getColorInformation", { handler: handlers.getColorInformationHandler, payloadSchema: schemas.getColorInformationPayload, resultSchema: schemas.getColorInformationResult });
     server.register("getTypeHierarchy", { handler: handlers.getTypeHierarchyHandler, payloadSchema: schemas.getTypeHierarchyPayload, resultSchema: schemas.getTypeHierarchyResult });
+
+    // Register all RPC handlers — debug (DAP)
+    server.register("debugGetState", { handler: debugHandlers.debugGetStateHandler, payloadSchema: schemas.debugGetStatePayload, resultSchema: schemas.debugGetStateResult });
+    server.register("debugStart", { handler: debugHandlers.debugStartHandler, payloadSchema: schemas.debugStartPayload, resultSchema: schemas.debugStartResult });
+    server.register("debugStop", { handler: debugHandlers.debugStopHandler, payloadSchema: schemas.debugStopPayload, resultSchema: schemas.debugStopResult });
+    server.register("debugSetBreakpoints", { handler: debugHandlers.debugSetBreakpointsHandler, payloadSchema: schemas.debugSetBreakpointsPayload, resultSchema: schemas.debugSetBreakpointsResult });
+    server.register("debugGetBreakpoints", { handler: debugHandlers.debugGetBreakpointsHandler, payloadSchema: schemas.debugGetBreakpointsPayload, resultSchema: schemas.debugGetBreakpointsResult });
+    server.register("debugRemoveAllBreakpoints", { handler: debugHandlers.debugRemoveAllBreakpointsHandler, payloadSchema: schemas.debugRemoveAllBreakpointsPayload, resultSchema: schemas.debugRemoveAllBreakpointsResult });
+    server.register("debugContinue", { handler: debugHandlers.debugContinueHandler, payloadSchema: schemas.debugThreadActionPayload, resultSchema: schemas.debugThreadActionResult });
+    server.register("debugPause", { handler: debugHandlers.debugPauseHandler, payloadSchema: schemas.debugThreadActionPayload, resultSchema: schemas.debugThreadActionResult });
+    server.register("debugStepOver", { handler: debugHandlers.debugStepOverHandler, payloadSchema: schemas.debugThreadActionPayload, resultSchema: schemas.debugThreadActionResult });
+    server.register("debugStepInto", { handler: debugHandlers.debugStepIntoHandler, payloadSchema: schemas.debugThreadActionPayload, resultSchema: schemas.debugThreadActionResult });
+    server.register("debugStepOut", { handler: debugHandlers.debugStepOutHandler, payloadSchema: schemas.debugThreadActionPayload, resultSchema: schemas.debugThreadActionResult });
+    server.register("debugGetThreads", { handler: debugHandlers.debugGetThreadsHandler, payloadSchema: schemas.debugGetThreadsPayload, resultSchema: schemas.debugGetThreadsResult });
+    server.register("debugGetStackTrace", { handler: debugHandlers.debugGetStackTraceHandler, payloadSchema: schemas.debugGetStackTracePayload, resultSchema: schemas.debugGetStackTraceResult });
+    server.register("debugGetScopes", { handler: debugHandlers.debugGetScopesHandler, payloadSchema: schemas.debugGetScopesPayload, resultSchema: schemas.debugGetScopesResult });
+    server.register("debugGetVariables", { handler: debugHandlers.debugGetVariablesHandler, payloadSchema: schemas.debugGetVariablesPayload, resultSchema: schemas.debugGetVariablesResult });
+    server.register("debugEvaluate", { handler: debugHandlers.debugEvaluateHandler, payloadSchema: schemas.debugEvaluatePayload, resultSchema: schemas.debugEvaluateResult });
+    server.register("debugWaitForEvent", { handler: debugHandlers.debugWaitForEventHandler, payloadSchema: schemas.debugWaitForEventPayload, resultSchema: schemas.debugWaitForEventResult });
 
     await server.start();
     logger.info(`Socket server started at: ${server.getSocketPath()}`);
@@ -75,7 +101,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       vscode.commands.registerCommand("vscode-mcp-bridge.sleep", (seconds: number) => sleep(seconds)),
       vscode.commands.registerCommand("vscode-mcp-bridge.copyOpenedFilesPath", (opts) => copyOpenedFilesPath(opts)),
       vscode.commands.registerCommand("vscode-mcp-bridge.copyCurrentSelectionReference", (opts) => copyCurrentSelectionReference(opts)),
-      { dispose: () => { if (server) { server.cleanup(); server = undefined; } } },
+      { dispose: () => { if (server) { server.cleanup(); server = undefined; } if (debugManager) { debugManager.dispose(); debugManager = undefined; } } },
     );
   } catch (err) {
     logger.error(`Failed to start socket server: ${err}`);
@@ -85,6 +111,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
 export function deactivate(): void {
   logger.info("VSCode MCP Bridge extension is being deactivated");
+  if (debugManager) { debugManager.dispose(); debugManager = undefined; }
   if (server) { server.cleanup(); server = undefined; }
   logger.dispose();
 }
