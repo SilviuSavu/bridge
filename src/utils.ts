@@ -1,6 +1,15 @@
 import * as path from "node:path";
 import * as vscode from "vscode";
 
+export const EXTENSION_VERSION = "4.7.0";
+
+/** Check if a file path is within the current workspace. */
+export function isInWorkspace(filePath: string): boolean {
+  const root = getWorkspacePath();
+  if (!root) return false;
+  return path.resolve(filePath).startsWith(path.resolve(root));
+}
+
 /** Get the first workspace folder path, or undefined if none. */
 export function getWorkspacePath(): string | undefined {
   const folders = vscode.workspace.workspaceFolders;
@@ -9,23 +18,23 @@ export function getWorkspacePath(): string | undefined {
 }
 
 /** Resolve a file path (absolute or relative to workspace root) to a vscode.Uri. */
-export function resolveFileUri(filePath: string): vscode.Uri {
+export function resolveFileUri(filePath: string, workspaceRoot?: string): vscode.Uri {
   if (path.isAbsolute(filePath)) return vscode.Uri.file(filePath);
+  if (workspaceRoot) return vscode.Uri.file(path.join(workspaceRoot, filePath));
   const root = vscode.workspace.workspaceFolders?.[0];
   if (!root) throw new Error("No workspace folder found for relative path resolution");
   return vscode.Uri.file(path.join(root.uri.fsPath, filePath));
 }
 
 /** Resolve an array of file paths to vscode.Uris. */
-export function resolveFileUris(paths: string[]): vscode.Uri[] {
-  return paths.map(resolveFileUri);
+export function resolveFileUris(paths: string[], workspaceRoot?: string): vscode.Uri[] {
+  return paths.map((p) => resolveFileUri(p, workspaceRoot));
 }
 
-/** Open a text document (ensures LSP sees it). */
+/** Open a text document so the language server sees it. Does not save. */
 export async function ensureDocumentOpen(uri: vscode.Uri): Promise<void> {
   try {
-    const doc = await vscode.workspace.openTextDocument(uri);
-    await doc.save();
+    await vscode.workspace.openTextDocument(uri);
   } catch (err) {
     console.warn(`Could not open file ${uri.toString()}: ${err}`);
   }
@@ -49,6 +58,11 @@ export async function getUsageCode(
   } catch {
     return undefined;
   }
+}
+
+/** Normalize a leading `@` from file paths (some models include it). */
+export function stripLeadingAt(filePath: string): string {
+  return filePath.startsWith("@") ? filePath.slice(1) : filePath;
 }
 
 /** Augment location results with usageCode. */

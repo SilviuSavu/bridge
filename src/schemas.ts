@@ -55,7 +55,7 @@ const DiagnosticFile = z.object({
 }).strict();
 
 export const getDiagnosticsPayload = z.object({
-  __NOT_RECOMMEND__filePaths: z.array(FilePath).describe("Array of file paths to get diagnostics for. If empty, will get diagnostics for all git modified files."),
+  filePaths: z.array(FilePath).describe("Array of file paths to get diagnostics for. If empty, defaults to all git-modified files in the workspace."),
   sources: z.array(z.string()).optional().default([]).describe('Diagnostic sources to include (e.g., "eslint", "ts"). Empty = all.'),
   severities: z.array(z.enum(["error", "warning", "info", "hint"])).optional().default(["error", "warning", "info", "hint"]).describe("Severity levels to include."),
 }).strict();
@@ -178,7 +178,7 @@ export const listWorkspacesResult = z.object({
   }).strict(),
 }).strict();
 
-// ── getCodeActions (new) ──────────────────────────────────────────────
+// ── getCodeActions ────────────────────────────────────────────────────
 
 export const getCodeActionsPayload = z.object({
   filePath: FilePath,
@@ -197,7 +197,7 @@ export const getCodeActionsResult = z.object({
   })),
 }).strict();
 
-// ── getCallHierarchy (new) ────────────────────────────────────────────
+// ── getCallHierarchy ──────────────────────────────────────────────────
 
 const CallHierarchyItemSchema = z.object({
   name: z.string(),
@@ -220,4 +220,193 @@ export const getCallHierarchyResult = z.object({
     to: CallHierarchyItemSchema,
     fromRanges: z.array(Range),
   })).optional(),
+}).strict();
+
+// ── getDocumentSymbols ────────────────────────────────────────────────
+
+const DocumentSymbolItem: z.ZodType<{
+  name: string;
+  kind: number;
+  range: z.infer<typeof Range>;
+  selectionRange: z.infer<typeof Range>;
+  detail?: string;
+  children?: Array<{
+    name: string;
+    kind: number;
+    range: z.infer<typeof Range>;
+    selectionRange: z.infer<typeof Range>;
+    detail?: string;
+    children?: unknown[];
+  }>;
+}> = z.object({
+  name: z.string(),
+  kind: z.number(),
+  range: Range,
+  selectionRange: Range,
+  detail: z.string().optional(),
+  children: z.lazy(() => z.array(DocumentSymbolItem)).optional(),
+}).strict();
+
+export const getDocumentSymbolsPayload = z.object({
+  filePath: FilePath,
+}).strict();
+
+export const getDocumentSymbolsResult = z.object({
+  symbols: z.array(DocumentSymbolItem),
+}).strict();
+
+// ── getDocumentHighlights ─────────────────────────────────────────────
+
+export const getDocumentHighlightsPayload = SymbolParams.strict();
+
+export const getDocumentHighlightsResult = z.object({
+  highlights: z.array(z.object({
+    range: Range,
+    kind: z.enum(["text", "read", "write"]),
+  }).strict()),
+}).strict();
+
+// ── getFoldingRanges ──────────────────────────────────────────────────
+
+export const getFoldingRangesPayload = z.object({
+  filePath: FilePath,
+}).strict();
+
+export const getFoldingRangesResult = z.object({
+  ranges: z.array(z.object({
+    start: z.number().describe("0-indexed start line"),
+    end: z.number().describe("0-indexed end line"),
+    kind: z.enum(["comment", "imports", "region", "other"]).optional(),
+  }).strict()),
+}).strict();
+
+// ── getSelectionRanges ────────────────────────────────────────────────
+
+export const getSelectionRangesPayload = z.object({
+  filePath: FilePath,
+  positions: z.array(Position).describe("Positions to get selection ranges for"),
+}).strict();
+
+const SelectionRangeItem: z.ZodType<{
+  range: z.infer<typeof Range>;
+  parent?: { range: z.infer<typeof Range>; parent?: unknown };
+}> = z.object({
+  range: Range,
+  parent: z.lazy(() => SelectionRangeItem).optional(),
+}).strict();
+
+export const getSelectionRangesResult = z.object({
+  selectionRanges: z.array(SelectionRangeItem),
+}).strict();
+
+// ── getInlayHints ─────────────────────────────────────────────────────
+
+export const getInlayHintsPayload = z.object({
+  filePath: FilePath,
+  range: Range.optional().describe("Range to get hints for. Defaults to full document."),
+}).strict();
+
+export const getInlayHintsResult = z.object({
+  hints: z.array(z.object({
+    position: Position,
+    label: z.string(),
+    kind: z.enum(["type", "parameter", "other"]).optional(),
+    paddingLeft: z.boolean().optional(),
+    paddingRight: z.boolean().optional(),
+    tooltip: z.string().optional(),
+  }).strict()),
+}).strict();
+
+// ── getWorkspaceSymbols ───────────────────────────────────────────────
+
+export const getWorkspaceSymbolsPayload = z.object({
+  query: z.string().describe("Symbol search query"),
+}).strict();
+
+export const getWorkspaceSymbolsResult = z.object({
+  symbols: z.array(z.object({
+    name: z.string(),
+    kind: z.number(),
+    containerName: z.string().optional(),
+    location: z.object({
+      uri: z.string(),
+      range: Range,
+    }).strict(),
+  }).strict()),
+}).strict();
+
+// ── getDocumentLinks ──────────────────────────────────────────────────
+
+export const getDocumentLinksPayload = z.object({
+  filePath: FilePath,
+}).strict();
+
+export const getDocumentLinksResult = z.object({
+  links: z.array(z.object({
+    range: Range,
+    target: z.string().optional(),
+    tooltip: z.string().optional(),
+  }).strict()),
+}).strict();
+
+// ── getCompletions ────────────────────────────────────────────────────
+
+export const getCompletionsPayload = z.object({
+  filePath: FilePath,
+  line: z.number().describe("0-indexed line"),
+  character: z.number().describe("0-indexed character"),
+  triggerCharacter: z.string().optional().describe("Trigger character (e.g. '.', '(')"),
+  maxResults: z.number().optional().default(50).describe("Maximum completions to return"),
+}).strict();
+
+export const getCompletionsResult = z.object({
+  items: z.array(z.object({
+    label: z.string(),
+    kind: z.string().optional(),
+    detail: z.string().optional(),
+    documentation: z.string().optional(),
+    insertText: z.string().optional(),
+    sortText: z.string().optional(),
+    filterText: z.string().optional(),
+    preselect: z.boolean().optional(),
+  }).strict()),
+  isIncomplete: z.boolean().optional(),
+}).strict();
+
+// ── getColorInformation ──────────────────────────────────────────────
+
+export const getColorInformationPayload = z.object({
+  filePath: FilePath,
+}).strict();
+
+export const getColorInformationResult = z.object({
+  colors: z.array(z.object({
+    range: Range,
+    color: z.object({
+      red: z.number(),
+      green: z.number(),
+      blue: z.number(),
+      alpha: z.number(),
+    }).strict(),
+  }).strict()),
+}).strict();
+
+
+// ── getTypeHierarchy ─────────────────────────────────────────────────
+
+const TypeHierarchyItemSchema = z.object({
+  name: z.string(),
+  kind: z.number(),
+  uri: z.string(),
+  detail: z.string().optional(),
+  range: Range,
+}).strict();
+
+export const getTypeHierarchyPayload = SymbolParams.extend({
+  direction: z.enum(["supertypes", "subtypes", "both"]).optional().default("both"),
+}).strict();
+
+export const getTypeHierarchyResult = z.object({
+  supertypes: z.array(TypeHierarchyItemSchema).optional(),
+  subtypes: z.array(TypeHierarchyItemSchema).optional(),
 }).strict();

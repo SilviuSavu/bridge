@@ -4,8 +4,9 @@ import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import * as vscode from "vscode";
 import { logger } from "./logger";
-import { resolveFileUri, resolveFileUris, ensureDocumentOpen, getUsageCode, augmentWithUsageCode, getWorkspacePath } from "./utils";
+import { resolveFileUri, resolveFileUris, ensureDocumentOpen, getUsageCode, augmentWithUsageCode, getWorkspacePath, EXTENSION_VERSION } from "./utils";
 import { resolveSymbolPosition } from "./symbol-resolver";
+import type { RequestContext } from "./socket-server";
 
 const execAsync = promisify(exec);
 
@@ -67,6 +68,17 @@ function convertArgs(args: unknown[]): unknown[] {
   });
 }
 
+// ── Completion kind mapping ───────────────────────────────────────────
+
+const COMPLETION_KIND_NAMES: Record<number, string> = {
+  0: "text", 1: "method", 2: "function", 3: "constructor", 4: "field",
+  5: "variable", 6: "class", 7: "interface", 8: "module", 9: "property",
+  10: "unit", 11: "value", 12: "enum", 13: "keyword", 14: "snippet",
+  15: "color", 16: "file", 17: "reference", 18: "folder", 19: "enumMember",
+  20: "constant", 21: "struct", 22: "event", 23: "operator", 24: "typeParameter",
+  25: "user", 26: "issue",
+};
+
 // ── Git helpers ───────────────────────────────────────────────────────
 
 async function getGitModifiedFiles(dir: string): Promise<string[]> {
@@ -89,12 +101,10 @@ async function getGitModifiedFiles(dir: string): Promise<string[]> {
   return [...files];
 }
 
-async function getAllModifiedFiles(): Promise<string[]> {
-  const root = vscode.workspace.workspaceFolders?.[0];
-  if (!root) return [];
-  const rootPath = root.uri.fsPath;
+async function getAllModifiedFiles(workspaceRoot?: string): Promise<string[]> {
+  const rootPath = workspaceRoot || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!rootPath) return [];
   const files = await getGitModifiedFiles(rootPath);
-  // Also check submodules
   try {
     const { stdout } = await execAsync("git submodule --quiet foreach 'echo $sm_path'", { cwd: rootPath });
     if (stdout.trim()) {
@@ -134,17 +144,49 @@ function waitForDiagnosticsToChange(uris: vscode.Uri[], baseline: Map<string, nu
   });
 }
 
+// ── Document symbol serialization ─────────────────────────────────────
+
+function serializeDocumentSymbol(sym: vscode.DocumentSymbol): {
+  name: string; kind: number; range: ReturnType<typeof serializeRange>;
+  selectionRange: ReturnType<typeof serializeRange>; detail?: string; children?: unknown[];
+} {
+  const out: {
+    name: string; kind: number; range: ReturnType<typeof serializeRange>;
+    selectionRange: ReturnType<typeof serializeRange>; detail?: string; children?: unknown[];
+  } = {
+    name: sym.name,
+    kind: sym.kind,
+    range: serializeRange(sym.range),
+    selectionRange: serializeRange(sym.selectionRange),
+  };
+  if (sym.detail) out.detail = sym.detail;
+  if (sym.children && sym.children.length > 0) {
+    out.children = sym.children.map(serializeDocumentSymbol);
+  }
+  return out;
+}
+
+// ── Full-document range helper ────────────────────────────────────────
+
+async function getFullDocumentRange(uri: vscode.Uri): Promise<vscode.Range> {
+  const doc = await vscode.workspace.openTextDocument(uri);
+  return new vscode.Range(
+    new vscode.Position(0, 0),
+    new vscode.Position(doc.lineCount - 1, doc.lineAt(doc.lineCount - 1).text.length),
+  );
+}
+
 // ══════════════════════════════════════════════════════════════════════
-//                         HANDLER IMPLEMENTATIONS
+//                     ORIGINAL HANDLER IMPLEMENTATIONS
 // ══════════════════════════════════════════════════════════════════════
 
-export const healthHandler = async (_params: Record<string, never>) => {
+export const healthHandler = async (_params: Record<string, never>, ctx: RequestContext) => {
   try {
-    const workspace = getWorkspacePath();
+    const workspace = ctx.workspaceFolder;
     const ideType = await detectIde();
     return {
       status: "ok" as const,
-      extension_version: "4.7.0",
+      extension_version: EXTENSION_VERSION,
       workspace: workspace ?? undefined,
       timestamp: new Date().toISOString(),
       system_info: { platform: os.platform(), node_version: process.version, vscode_version: vscode.version, ide_type: ideType },
@@ -152,7 +194,7 @@ export const healthHandler = async (_params: Record<string, never>) => {
   } catch (err) {
     return {
       status: "error" as const,
-      extension_version: "4.7.0",
+      extension_version: EXTENSION_VERSION,
       timestamp: new Date().toISOString(),
       error: `Health check failed: ${err instanceof Error ? err.message : String(err)}`,
       system_info: { platform: os.platform(), node_version: process.version, vscode_version: vscode.version, ide_type: "unknown" },
@@ -160,11 +202,11 @@ export const healthHandler = async (_params: Record<string, never>) => {
   }
 };
 
-export const getDiagnosticsHandler = async (params: { __NOT_RECOMMEND__filePaths: string[]; sources: string[]; severities: string[] }) => {
-  let filePaths = params.__NOT_RECOMMEND__filePaths;
-  if (filePaths.length === 0) filePaths = await getAllModifiedFiles();
+export const getDiagnosticsHandler = async (params: { filePaths: string[]; sources: string[]; severities: string[] }, ctx: RequestContext) => {
+  let filePaths = params.filePaths;
+  if (filePaths.length === 0) filePaths = await getAllModifiedFiles(ctx.workspaceFolder);
 
-  const uris = resolveFileUris(filePaths);
+  const uris = resolveFileUris(filePaths, ctx.workspaceFolder);
   const severityMap: Record<number, string> = { 0: "error", 1: "warning", 2: "info", 3: "hint" };
 
   const files = await Promise.all(uris.map(async (uri) => {
@@ -191,8 +233,8 @@ export const getDiagnosticsHandler = async (params: { __NOT_RECOMMEND__filePaths
   return { files };
 };
 
-export const getReferencesHandler = async (params: { filePath: string; symbol: string; codeSnippet?: string; includeDeclaration?: boolean; usageCodeLineRange?: number }) => {
-  const uri = resolveFileUri(params.filePath);
+export const getReferencesHandler = async (params: { filePath: string; symbol: string; codeSnippet?: string; includeDeclaration?: boolean; usageCodeLineRange?: number }, ctx: RequestContext) => {
+  const uri = resolveFileUri(params.filePath, ctx.workspaceFolder);
   await ensureDocumentOpen(uri);
   const pos = await resolveSymbolPosition(uri, params.symbol, params.codeSnippet);
   const refs = await vscode.commands.executeCommand<vscode.Location[]>("vscode.executeReferenceProvider", uri, pos, { includeDeclaration: params.includeDeclaration ?? false });
@@ -212,10 +254,10 @@ export const getReferencesHandler = async (params: { filePath: string; symbol: s
   return { locations };
 };
 
-export const getSymbolLSPInfoHandler = async (params: { filePath: string; symbol: string; codeSnippet?: string; infoType?: string }) => {
+export const getSymbolLSPInfoHandler = async (params: { filePath: string; symbol: string; codeSnippet?: string; infoType?: string }, ctx: RequestContext) => {
   const { filePath, symbol, codeSnippet, infoType = "all" } = params;
   const types = infoType === "all" ? ["hover", "signature_help", "type_definition", "definition", "implementation"] : [infoType];
-  const uri = resolveFileUri(filePath);
+  const uri = resolveFileUri(filePath, ctx.workspaceFolder);
   await ensureDocumentOpen(uri);
   const pos = await resolveSymbolPosition(uri, symbol, codeSnippet);
   const result: Record<string, unknown> = {};
@@ -229,7 +271,7 @@ export const getSymbolLSPInfoHandler = async (params: { filePath: string; symbol
         contents: h.contents.map((c) => typeof c === "string" ? c : c instanceof vscode.MarkdownString ? c.value : c.toString()),
         range: h.range ? serializeRange(h.range) : undefined,
       }));
-    } catch (e) { result.hover = [{ contents: [`Error: ${e}`] }]; }
+    } catch (e) { logger.error(`hover provider failed: ${e}`); }
   })());
 
   if (types.includes("signature_help")) tasks.push((async () => {
@@ -247,7 +289,7 @@ export const getSymbolLSPInfoHandler = async (params: { filePath: string; symbol
         activeSignature: sh.activeSignature,
         activeParameter: sh.activeParameter,
       };
-    } catch (e) { result.signature_help = { signatures: [{ label: `Error: ${e}`, parameters: [] }], activeSignature: 0, activeParameter: 0 }; }
+    } catch (e) { logger.error(`signature_help provider failed: ${e}`); }
   })());
 
   for (const key of ["type_definition", "definition", "implementation"] as const) {
@@ -260,7 +302,7 @@ export const getSymbolLSPInfoHandler = async (params: { filePath: string; symbol
           const serialized = locs.map(serializeLocation);
           result[key] = await augmentWithUsageCode(serialized);
         }
-      } catch (e) { result[key] = [{ uri: `error://${key}`, range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } }, usageCode: `Error: ${e}` }]; }
+      } catch (e) { logger.error(`${key} provider failed: ${e}`); }
     })());
   }
 
@@ -268,7 +310,7 @@ export const getSymbolLSPInfoHandler = async (params: { filePath: string; symbol
   return result;
 };
 
-export const executeCommandHandler = async (params: { command: string; args?: string; saveAllEditors?: boolean }) => {
+export const executeCommandHandler = async (params: { command: string; args?: string; saveAllEditors?: boolean }, _ctx: RequestContext) => {
   try {
     let args: unknown[] = [];
     if (params.args) {
@@ -284,10 +326,10 @@ export const executeCommandHandler = async (params: { command: string; args?: st
   }
 };
 
-export const openFilesHandler = async (params: { files: Array<{ filePath: string; showEditor?: boolean }> }) => ({
+export const openFilesHandler = async (params: { files: Array<{ filePath: string; showEditor?: boolean }> }, ctx: RequestContext) => ({
   results: await Promise.all(params.files.map(async (f) => {
     try {
-      const uri = resolveFileUri(f.filePath);
+      const uri = resolveFileUri(f.filePath, ctx.workspaceFolder);
       const doc = await vscode.workspace.openTextDocument(uri);
       const show = f.showEditor ?? true;
       if (show) await vscode.window.showTextDocument(doc, { preview: false, preserveFocus: false });
@@ -298,10 +340,10 @@ export const openFilesHandler = async (params: { files: Array<{ filePath: string
   })),
 });
 
-export const renameSymbolHandler = async (params: { filePath: string; symbol: string; newName: string; codeSnippet?: string }) => {
+export const renameSymbolHandler = async (params: { filePath: string; symbol: string; newName: string; codeSnippet?: string }, ctx: RequestContext) => {
   logger.info(`Renaming symbol "${params.symbol}" in ${params.filePath} to "${params.newName}"`);
   try {
-    const uri = resolveFileUri(params.filePath);
+    const uri = resolveFileUri(params.filePath, ctx.workspaceFolder);
     const pos = await resolveSymbolPosition(uri, params.symbol, params.codeSnippet);
     await vscode.workspace.openTextDocument(uri);
     if (!params.newName.trim()) return { success: false, modifiedFiles: [], totalChanges: 0, error: "New name cannot be empty" };
@@ -332,26 +374,17 @@ export const renameSymbolHandler = async (params: { filePath: string; symbol: st
   }
 };
 
-async function revertSingleFile(filePath: string): Promise<{ filePath: string; success: boolean; message: string }> {
+async function revertSingleFile(filePath: string, workspaceRoot?: string): Promise<{ filePath: string; success: boolean; message: string }> {
   try {
-    const uri = resolveFileUri(filePath);
+    const uri = resolveFileUri(filePath, workspaceRoot);
     const diskBytes = await vscode.workspace.fs.readFile(uri);
     const diskContent = new TextDecoder().decode(diskBytes);
     const doc = await vscode.workspace.openTextDocument(uri);
     const editorContent = doc.getText();
 
     if (editorContent === diskContent) {
-      // Force refresh: insert space then replace back
-      const endPos = doc.positionAt(editorContent.length);
-      const edit1 = new vscode.WorkspaceEdit();
-      edit1.insert(uri, endPos, " ");
-      await vscode.workspace.applyEdit(edit1);
-      const doc2 = await vscode.workspace.openTextDocument(uri);
-      const edit2 = new vscode.WorkspaceEdit();
-      edit2.replace(uri, new vscode.Range(doc2.positionAt(0), doc2.positionAt(doc2.getText().length)), diskContent);
-      await vscode.workspace.applyEdit(edit2);
-      await doc2.save();
-      return { filePath, success: true, message: "Forced refresh" };
+      await vscode.commands.executeCommand("workbench.action.files.revert", uri);
+      return { filePath, success: true, message: "Already in sync, triggered refresh" };
     }
 
     const fullRange = new vscode.Range(doc.positionAt(0), doc.positionAt(editorContent.length));
@@ -365,15 +398,15 @@ async function revertSingleFile(filePath: string): Promise<{ filePath: string; s
   }
 }
 
-export const revertFilesHandler = async (params: { files: string[]; waitForDiagnostics?: boolean }) => {
-  const uris = params.files.map(resolveFileUri);
+export const revertFilesHandler = async (params: { files: string[]; waitForDiagnostics?: boolean }, ctx: RequestContext) => {
+  const uris = params.files.map((f) => resolveFileUri(f, ctx.workspaceFolder));
   const baseline = (params.waitForDiagnostics ?? false) ? snapshotDiagnosticCounts(uris) : undefined;
-  const results = await Promise.all(params.files.map(revertSingleFile));
+  const results = await Promise.all(params.files.map((f) => revertSingleFile(f, ctx.workspaceFolder)));
   if (baseline) await waitForDiagnosticsToChange(uris, baseline);
   return { results };
 };
 
-export const listWorkspacesHandler = async (_params: Record<string, never>) => {
+export const listWorkspacesHandler = async (_params: Record<string, never>, _ctx: RequestContext) => {
   const rootPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (!rootPath) return { workspaces: [], summary: { total: 0, active: 0, available: 0, cleaned: 0 } };
   const ideType = await detectIde();
@@ -392,7 +425,7 @@ export const listWorkspacesHandler = async (_params: Record<string, never>) => {
       workspace_type: workspaceType,
       folders: folders?.map((f) => f.uri.fsPath),
       status: "active" as const,
-      extension_version: "4.7.0",
+      extension_version: EXTENSION_VERSION,
       vscode_version: vscode.version,
       ide_type: ideType,
     }],
@@ -400,10 +433,217 @@ export const listWorkspacesHandler = async (_params: Record<string, never>) => {
   };
 };
 
-// ── New handlers ──────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════
+//                        NEW LSP HANDLERS
+// ══════════════════════════════════════════════════════════════════════
 
-export const getCodeActionsHandler = async (params: { filePath: string; line: number; character: number; endLine?: number; endCharacter?: number; kind?: string }) => {
-  const uri = resolveFileUri(params.filePath);
+export const getDocumentSymbolsHandler = async (params: { filePath: string }, ctx: RequestContext) => {
+  const uri = resolveFileUri(params.filePath, ctx.workspaceFolder);
+  await ensureDocumentOpen(uri);
+  const symbols = await vscode.commands.executeCommand<vscode.DocumentSymbol[]>("vscode.executeDocumentSymbolProvider", uri);
+  if (!symbols || symbols.length === 0) return { symbols: [] };
+  return { symbols: symbols.map(serializeDocumentSymbol) };
+};
+
+export const getDocumentHighlightsHandler = async (params: { filePath: string; symbol: string; codeSnippet?: string }, ctx: RequestContext) => {
+  const uri = resolveFileUri(params.filePath, ctx.workspaceFolder);
+  await ensureDocumentOpen(uri);
+  const pos = await resolveSymbolPosition(uri, params.symbol, params.codeSnippet);
+  const highlights = await vscode.commands.executeCommand<vscode.DocumentHighlight[]>("vscode.executeDocumentHighlights", uri, pos);
+  if (!highlights || highlights.length === 0) return { highlights: [] };
+  const kindMap: Record<number, "text" | "read" | "write"> = { 0: "text", 1: "read", 2: "write" };
+  return {
+    highlights: highlights.map((h) => ({
+      range: serializeRange(h.range),
+      kind: kindMap[h.kind ?? 0] || "text",
+    })),
+  };
+};
+
+export const getFoldingRangesHandler = async (params: { filePath: string }, ctx: RequestContext) => {
+  const uri = resolveFileUri(params.filePath, ctx.workspaceFolder);
+  await ensureDocumentOpen(uri);
+  const ranges = await vscode.commands.executeCommand<vscode.FoldingRange[]>("vscode.executeFoldingRangeProvider", uri);
+  if (!ranges || ranges.length === 0) return { ranges: [] };
+  const kindMap: Record<number, "comment" | "imports" | "region"> = {
+    1: "comment", 2: "imports", 3: "region",
+  };
+  return {
+    ranges: ranges.map((r) => ({
+      start: r.start,
+      end: r.end,
+      kind: r.kind !== undefined ? (kindMap[r.kind] || "other" as const) : ("other" as const),
+    })),
+  };
+};
+
+export const getSelectionRangesHandler = async (params: { filePath: string; positions: Array<{ line: number; character: number }> }, ctx: RequestContext) => {
+  const uri = resolveFileUri(params.filePath, ctx.workspaceFolder);
+  await ensureDocumentOpen(uri);
+  const positions = params.positions.map((p) => new vscode.Position(p.line, p.character));
+  const ranges = await vscode.commands.executeCommand<vscode.SelectionRange[]>("vscode.executeSelectionRangeProvider", uri, positions);
+  if (!ranges || ranges.length === 0) return { selectionRanges: [] };
+
+  function serializeSelectionRange(sr: vscode.SelectionRange): { range: ReturnType<typeof serializeRange>; parent?: unknown } {
+    const out: { range: ReturnType<typeof serializeRange>; parent?: unknown } = {
+      range: serializeRange(sr.range),
+    };
+    if (sr.parent) out.parent = serializeSelectionRange(sr.parent);
+    return out;
+  }
+
+  return { selectionRanges: ranges.map(serializeSelectionRange) };
+};
+
+export const getInlayHintsHandler = async (params: { filePath: string; range?: { start: { line: number; character: number }; end: { line: number; character: number } } }, ctx: RequestContext) => {
+  const uri = resolveFileUri(params.filePath, ctx.workspaceFolder);
+  await ensureDocumentOpen(uri);
+
+  const range = params.range
+    ? new vscode.Range(
+        new vscode.Position(params.range.start.line, params.range.start.character),
+        new vscode.Position(params.range.end.line, params.range.end.character),
+      )
+    : await getFullDocumentRange(uri);
+
+  const hints = await vscode.commands.executeCommand<vscode.InlayHint[]>("vscode.executeInlayHintProvider", uri, range);
+  if (!hints || hints.length === 0) return { hints: [] };
+  const kindMap: Record<number, "type" | "parameter"> = { 1: "type", 2: "parameter" };
+
+  return {
+    hints: hints.map((h) => {
+      const label = typeof h.label === "string" ? h.label : h.label.map((part) => part.value).join("");
+      const tooltip = h.tooltip instanceof vscode.MarkdownString ? h.tooltip.value : typeof h.tooltip === "string" ? h.tooltip : undefined;
+      const out: { position: { line: number; character: number }; label: string; kind?: "type" | "parameter" | "other"; paddingLeft?: boolean; paddingRight?: boolean; tooltip?: string } = {
+        position: { line: h.position.line, character: h.position.character },
+        label,
+      };
+      if (h.kind !== undefined) out.kind = kindMap[h.kind] || "other";
+      if (h.paddingLeft) out.paddingLeft = true;
+      if (h.paddingRight) out.paddingRight = true;
+      if (tooltip) out.tooltip = tooltip;
+      return out;
+    }),
+  };
+};
+
+export const getWorkspaceSymbolsHandler = async (params: { query: string }, _ctx: RequestContext) => {
+  const symbols = await vscode.commands.executeCommand<vscode.SymbolInformation[]>("vscode.executeWorkspaceSymbolProvider", params.query);
+  if (!symbols || symbols.length === 0) return { symbols: [] };
+  return {
+    symbols: symbols.map((s) => ({
+      name: s.name,
+      kind: s.kind,
+      containerName: s.containerName || undefined,
+      location: {
+        uri: s.location.uri.toString(),
+        range: serializeRange(s.location.range),
+      },
+    })),
+  };
+};
+
+export const getDocumentLinksHandler = async (params: { filePath: string }, ctx: RequestContext) => {
+  const uri = resolveFileUri(params.filePath, ctx.workspaceFolder);
+  await ensureDocumentOpen(uri);
+  const links = await vscode.commands.executeCommand<vscode.DocumentLink[]>("vscode.executeLinkProvider", uri);
+  if (!links || links.length === 0) return { links: [] };
+  return {
+    links: links.map((l) => {
+      const out: { range: ReturnType<typeof serializeRange>; target?: string; tooltip?: string } = {
+        range: serializeRange(l.range),
+      };
+      if (l.target) out.target = l.target.toString();
+      if (l.tooltip) out.tooltip = l.tooltip;
+      return out;
+    }),
+  };
+};
+
+export const getCompletionsHandler = async (params: { filePath: string; line: number; character: number; triggerCharacter?: string; maxResults?: number }, ctx: RequestContext) => {
+  const uri = resolveFileUri(params.filePath, ctx.workspaceFolder);
+  await ensureDocumentOpen(uri);
+  const pos = new vscode.Position(params.line, params.character);
+  const maxResults = params.maxResults ?? 50;
+
+  const completions = params.triggerCharacter
+    ? await vscode.commands.executeCommand<vscode.CompletionList>("vscode.executeCompletionItemProvider", uri, pos, params.triggerCharacter)
+    : await vscode.commands.executeCommand<vscode.CompletionList>("vscode.executeCompletionItemProvider", uri, pos);
+
+  if (!completions || !completions.items || completions.items.length === 0) return { items: [], isIncomplete: false };
+
+  const items = completions.items.slice(0, maxResults).map((item) => {
+    const doc = item.documentation instanceof vscode.MarkdownString
+      ? item.documentation.value
+      : typeof item.documentation === "string" ? item.documentation : undefined;
+    const out: {
+      label: string; kind?: string; detail?: string; documentation?: string;
+      insertText?: string; sortText?: string; filterText?: string; preselect?: boolean;
+    } = {
+      label: typeof item.label === "string" ? item.label : item.label.label,
+    };
+    if (item.kind !== undefined) out.kind = COMPLETION_KIND_NAMES[item.kind] || "unknown";
+    if (item.detail) out.detail = item.detail;
+    if (doc) out.documentation = doc;
+    if (item.insertText) out.insertText = typeof item.insertText === "string" ? item.insertText : item.insertText.value;
+    if (item.sortText) out.sortText = item.sortText;
+    if (item.filterText) out.filterText = item.filterText;
+    if (item.preselect) out.preselect = true;
+    return out;
+  });
+
+  return { items, isIncomplete: completions.isIncomplete };
+};
+
+export const getColorInformationHandler = async (params: { filePath: string }, ctx: RequestContext) => {
+  const uri = resolveFileUri(params.filePath, ctx.workspaceFolder);
+  await ensureDocumentOpen(uri);
+  const colors = await vscode.commands.executeCommand<vscode.ColorInformation[]>("vscode.executeDocumentColorProvider", uri);
+  if (!colors || colors.length === 0) return { colors: [] };
+  return {
+    colors: colors.map((c) => ({
+      range: serializeRange(c.range),
+      color: { red: c.color.red, green: c.color.green, blue: c.color.blue, alpha: c.color.alpha },
+    })),
+  };
+};
+
+
+export const getTypeHierarchyHandler = async (params: { filePath: string; symbol: string; codeSnippet?: string; direction?: string }, ctx: RequestContext) => {
+  const uri = resolveFileUri(params.filePath, ctx.workspaceFolder);
+  await ensureDocumentOpen(uri);
+  const pos = await resolveSymbolPosition(uri, params.symbol, params.codeSnippet);
+
+  const items = await vscode.commands.executeCommand<vscode.TypeHierarchyItem[]>("vscode.prepareTypeHierarchy", uri, pos);
+  if (!items || items.length === 0) throw new Error("Type hierarchy not available for this symbol (LSP returned no items)");
+  const item = items[0];
+
+  const serializeItem = (i: vscode.TypeHierarchyItem) => ({
+    name: i.name,
+    kind: i.kind,
+    uri: i.uri.toString(),
+    detail: i.detail || undefined,
+    range: serializeRange(i.range),
+  });
+
+  const result: { supertypes?: unknown[]; subtypes?: unknown[] } = {};
+  const dir = params.direction || "both";
+
+  if (dir === "supertypes" || dir === "both") {
+    const supertypes = await vscode.commands.executeCommand<vscode.TypeHierarchyItem[]>("vscode.provideSupertypes", item);
+    if (supertypes?.length) result.supertypes = supertypes.map(serializeItem);
+  }
+
+  if (dir === "subtypes" || dir === "both") {
+    const subtypes = await vscode.commands.executeCommand<vscode.TypeHierarchyItem[]>("vscode.provideSubtypes", item);
+    if (subtypes?.length) result.subtypes = subtypes.map(serializeItem);
+  }
+
+  return result;
+};
+
+export const getCodeActionsHandler = async (params: { filePath: string; line: number; character: number; endLine?: number; endCharacter?: number; kind?: string }, ctx: RequestContext) => {
+  const uri = resolveFileUri(params.filePath, ctx.workspaceFolder);
   await ensureDocumentOpen(uri);
   const startPos = new vscode.Position(params.line, params.character);
   const endPos = new vscode.Position(params.endLine ?? params.line, params.endCharacter ?? params.character);
@@ -413,7 +653,7 @@ export const getCodeActionsHandler = async (params: { filePath: string; line: nu
     "vscode.executeCodeActionProvider",
     uri,
     range,
-    params.kind ? new vscode.CodeActionKind(params.kind) : undefined,
+    params.kind ? vscode.CodeActionKind.Empty.append(params.kind) : undefined,
   );
 
   if (!raw || raw.length === 0) return { actions: [] };
@@ -426,8 +666,8 @@ export const getCodeActionsHandler = async (params: { filePath: string; line: nu
   };
 };
 
-export const getCallHierarchyHandler = async (params: { filePath: string; symbol: string; codeSnippet?: string; direction?: string }) => {
-  const uri = resolveFileUri(params.filePath);
+export const getCallHierarchyHandler = async (params: { filePath: string; symbol: string; codeSnippet?: string; direction?: string }, ctx: RequestContext) => {
+  const uri = resolveFileUri(params.filePath, ctx.workspaceFolder);
   await ensureDocumentOpen(uri);
   const pos = await resolveSymbolPosition(uri, params.symbol, params.codeSnippet);
 
