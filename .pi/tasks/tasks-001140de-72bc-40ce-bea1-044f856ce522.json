@@ -1,0 +1,34 @@
+{
+  "nextId": 24,
+  "tasks": [
+    {
+      "id": "22",
+      "subject": "Redesign followUp to emit structured tasks instead of text dump",
+      "description": "Redesign the agent_end followUp delivery in all four CI gates to create discrete, trackable tasks instead of dumping a wall of text.\n\nCurrent flow:\n- agent_end → format all diagnostics + LSP context + DAP evidence as one big string → sendMessage as followUp\n\nNew flow:\n- agent_end → group diagnostics by file → resolve LSP context + DAP per group → emit structured task list → sendMessage with task-oriented instructions\n\nNeed to investigate:\n1. Can extensions create tasks via the Pi task system directly?\n2. Or should the followUp message be structured so the agent naturally creates tasks?\n3. How to attach per-diagnostic context (LSP + DAP) to individual tasks\n4. How to prioritize (errors before warnings)",
+      "status": "completed",
+      "activeForm": "Redesigning followUp as structured tasks",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1774748078534,
+      "updatedAt": 1774748531534
+    },
+    {
+      "id": "23",
+      "subject": "Rewrite followUp formatting as structured task list in all four gates",
+      "description": "Rewrite the followUp formatting in all four gates to emit a structured task list instead of a text dump.\n\nSIMPLER APPROACH: Keep resolveLspContext and DAP investigation returning strings as-is. Change only the formatting/assembly in agent_end to structure the output as per-diagnostic tasks.\n\nThe key changes:\n1. Replace formatPendingDiagnostics() with a new function formatAsTaskList() that:\n   - Takes pendingDiagnostics, lspContext string, dapContext string\n   - Sorts diagnostics: errors first, then warnings\n   - Numbers them as tasks\n   - For each diagnostic, extracts relevant lines from lspContext and dapContext by matching file/line references\n   - Formats each as a bounded task with its context attached\n\n2. Update agent_end to use the new formatter\n\n3. End the message with: \"Create a task for each item above. Fix errors first, then warnings.\"\n\nThe matching heuristic for attaching context to diagnostics:\n- LSP context sections reference line numbers (e.g., \"L12:\", \"L44:\") — match to diagnostic lines\n- LSP definition sections reference symbol names — match to diagnostic messages containing that symbol\n- DAP sections reference file:line — match to diagnostic file:line\n\nThis is imperfect matching but good enough — the context that doesn't match any specific diagnostic goes into a \"General context\" section at the end.\n\nFiles: ~/.pi/agent/extensions/{rust,typescript,python,go}-ci-gate/index.ts\n\nIMPORTANT: Use bash with python3 for all edits.",
+      "status": "completed",
+      "activeForm": "Restructuring followUp as task list",
+      "metadata": {
+        "agentType": "general-purpose",
+        "agentId": "a37a37c4-de69-425",
+        "result": "All four gates are patched successfully. Here is a summary of what was changed:\n\n**Changes applied to all four gates** (`rust-ci-gate`, `typescript-ci-gate`, `python-ci-gate`, `go-ci-gate`):\n\n1. **Added `formatAsTaskList()` function** (after `formatPendingDiagnostics`):\n   - Collects all diagnostics across files into a flat list\n   - Sorts errors before warnings\n   - Numbers each diagnostic as a task: `### Task N [error/warning]: message`\n   - Includes `**File:** path:line` for each\n   - Calls `extractContextForDiag()` to attach relevant LSP context and DAP evidence per diagnostic\n   - Ends with: `\"Create a task for each item above and fix them. Errors first, then warnings.\"`\n   - Uses language-specific header: `## Rust:`, `## TypeScript:`, `## Python:`, `## Go:`\n\n2. **Added `extractContextForDiag()` function**:\n   - Matches context lines by line number patterns (`L12`, `:12`, `line 12`)\n   - Matches by symbol names extracted from diagnostic messages (backtick/quote delimited)\n   - Captures up to 15 lines of relevant context, respecting code block boundaries\n\n3. **Updated `agent_end` handler**:\n   - Added `const taskListContent = formatAsTaskList(pendingDiagnostics, lspContext, dapContext)` **before** `pendingDiagnostics.length = 0`\n   - Replaced `content:` in `sendMessage` with `content: taskListContent`\n   - Preserved `formatPendingDiagnostics()` and `summary` variable (may be used elsewhere)"
+      },
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1774748171388,
+      "updatedAt": 1774748477674,
+      "owner": "a37a37c4-de69-425"
+    }
+  ]
+}
