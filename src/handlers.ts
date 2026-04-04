@@ -666,6 +666,88 @@ export const getCodeActionsHandler = async (params: { filePath: string; line: nu
   };
 };
 
+export const applyFixesHandler = async (params: { filePath: string; preferredOnly?: boolean }, ctx: RequestContext) => {
+  const uri = resolveFileUri(params.filePath, ctx.workspaceFolder);
+  await ensureDocumentOpen(uri);
+  const preferredOnly = params.preferredOnly !== false; // default true
+
+  const doc = vscode.workspace.textDocuments.find(d => d.uri.toString() === uri.toString());
+  const applied: string[] = [];
+  let skipped = 0;
+
+  // Strategy 1: fix diagnostics (errors/warnings with preferred quickfixes)
+  const diags = vscode.languages.getDiagnostics(uri)
+    .filter(d => d.severity === vscode.DiagnosticSeverity.Error || d.severity === vscode.DiagnosticSeverity.Warning);
+
+  const seen = new Set<string>();
+
+  for (const diag of diags) {
+    const key = `${diag.range.start.line}:${diag.range.start.character}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    let actions: vscode.CodeAction[];
+    try {
+      actions = await vscode.commands.executeCommand<vscode.CodeAction[]>(
+        "vscode.executeCodeActionProvider", uri, diag.range,
+      ) || [];
+    } catch { actions = []; }
+    const quickfixes = actions.filter(a => a.kind?.value?.startsWith("quickfix"));
+    if (!quickfixes.length) { skipped++; continue; }
+
+    const pick = preferredOnly
+      ? quickfixes.find(a => a.isPreferred)
+      : quickfixes.find(a => a.isPreferred) || quickfixes[0];
+
+    if (!pick) { skipped++; continue; }
+
+    try {
+      if (pick.edit) await vscode.workspace.applyEdit(pick.edit);
+      if (pick.command) await vscode.commands.executeCommand(pick.command.command, ...(pick.command.arguments || []));
+      applied.push(pick.title);
+    } catch (e) {
+      logger.error(`Failed to apply fix "${pick.title}": ${e}`);
+      skipped++;
+    }
+  }
+
+  // Strategy 2: whole-file sweep for source.fixAll actions (catches issues
+  // where diagnostics are stale but code actions are available)
+  if (doc) {
+    const fullRange = new vscode.Range(0, 0, doc.lineCount - 1, doc.lineAt(doc.lineCount - 1).text.length);
+    try {
+      const allActions = await vscode.commands.executeCommand<vscode.CodeAction[]>(
+        "vscode.executeCodeActionProvider", uri, fullRange,
+      ) || [];
+      // Apply quickfixes we haven't already applied (preferred first, then
+      // non-preferred non-copilot ones — catches rust-analyzer "Remove all
+      // unused imports" which is quickfix but not always marked preferred)
+      const remaining = allActions
+        .filter(a =>
+          a.kind?.value?.startsWith("quickfix") &&
+          !a.kind?.value?.includes("copilot") &&
+          !applied.includes(a.title),
+        )
+        .sort((a, b) => (b.isPreferred ? 1 : 0) - (a.isPreferred ? 1 : 0));
+      for (const action of remaining) {
+        try {
+          if (action.edit) await vscode.workspace.applyEdit(action.edit);
+          if (action.command) await vscode.commands.executeCommand(action.command.command, ...(action.command.arguments || []));
+          applied.push(action.title);
+        } catch (e) {
+          logger.error(`Failed to apply fix "${action.title}": ${e}`);
+        }
+      }
+    } catch (e) {
+      logger.error(`Whole-file sweep failed: ${e}`);
+    }
+  }
+
+  // Save after all fixes
+  if (applied.length > 0) await vscode.workspace.saveAll(false);
+  return { applied, skipped };
+};
+
 export const getCallHierarchyHandler = async (params: { filePath: string; symbol: string; codeSnippet?: string; direction?: string }, ctx: RequestContext) => {
   const uri = resolveFileUri(params.filePath, ctx.workspaceFolder);
   await ensureDocumentOpen(uri);

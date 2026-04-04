@@ -197,6 +197,18 @@ export const getCodeActionsResult = z.object({
   })),
 }).strict();
 
+// ── applyFixes ───────────────────────────────────────────────────────
+
+export const applyFixesPayload = z.object({
+  filePath: FilePath,
+  preferredOnly: z.boolean().optional().describe("Only apply preferred/suggested fixes (default: true)"),
+}).strict();
+
+export const applyFixesResult = z.object({
+  applied: z.array(z.string()).describe("Titles of applied fixes"),
+  skipped: z.number().describe("Number of diagnostics with no applicable fix"),
+}).strict();
+
 // ── getCallHierarchy ──────────────────────────────────────────────────
 
 const CallHierarchyItemSchema = z.object({

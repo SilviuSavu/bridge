@@ -39,6 +39,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     server.register("revertFiles", { handler: handlers.revertFilesHandler, payloadSchema: schemas.revertFilesPayload, resultSchema: schemas.revertFilesResult });
     server.register("listWorkspaces", { handler: handlers.listWorkspacesHandler, resultSchema: schemas.listWorkspacesResult });
     server.register("getCodeActions", { handler: handlers.getCodeActionsHandler, payloadSchema: schemas.getCodeActionsPayload, resultSchema: schemas.getCodeActionsResult });
+    server.register("applyFixes", { handler: handlers.applyFixesHandler, payloadSchema: schemas.applyFixesPayload, resultSchema: schemas.applyFixesResult });
     server.register("getCallHierarchy", { handler: handlers.getCallHierarchyHandler, payloadSchema: schemas.getCallHierarchyPayload, resultSchema: schemas.getCallHierarchyResult });
 
     // Register all RPC handlers — new LSP capabilities

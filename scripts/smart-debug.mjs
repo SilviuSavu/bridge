@@ -42,37 +42,22 @@ const sock = resolveSocket(flags.workspace);
 
 console.log("=== PHASE 0a: AUTO-FIX ===\n");
 
-// Open file in editor (required for editor.action.fixAll)
+// Open file and sync from disk (ensures buffer matches disk content)
 await callBridge(sock, "openFiles", { files: [{ filePath: file, showEditor: true }] }).catch(() => {});
+await callBridge(sock, "revertFiles", { files: [file], waitForDiagnostics: true }).catch(() => {});
 await new Promise(r => setTimeout(r, 500));
 
-// Check initial diagnostics
-const preFix = await callBridge(sock, "getDiagnostics", {
-  filePaths: [file], severities: ["error", "warning"], sources: [],
-}).catch(() => ({ files: [] }));
-const preFixCount = (preFix.files || []).flatMap(f => f.diagnostics).length;
+// Always attempt fixes — whole-file sweep catches issues even without diagnostics
+const fixes = await callBridge(sock, "applyFixes", {
+  filePath: file, preferredOnly: true,
+}).catch(e => { console.log(`  applyFixes error: ${e.message}`); return { applied: [], skipped: 0 }; });
 
-if (preFixCount > 0) {
-  console.log(`${preFixCount} diagnostic(s) before fix. Running auto-fix...`);
-  await callBridge(sock, "executeCommand", {
-    command: "editor.action.fixAll", args: "[]", saveAllEditors: true,
-  }).catch(() => {});
-  await new Promise(r => setTimeout(r, 1500));
-
-  // Check what's left
-  const postFix = await callBridge(sock, "getDiagnostics", {
-    filePaths: [file], severities: ["error", "warning"], sources: [],
-  }).catch(() => ({ files: [] }));
-  const postFixCount = (postFix.files || []).flatMap(f => f.diagnostics).length;
-  const fixed = preFixCount - postFixCount;
-
-  if (fixed > 0) {
-    console.log(`Auto-fixed ${fixed} issue(s). ${postFixCount} remaining.`);
-  } else {
-    console.log("No auto-fixable issues found.");
-  }
+if (fixes.applied.length > 0) {
+  for (const title of fixes.applied) console.log(`  Fixed: ${title}`);
+  console.log(`Auto-fixed ${fixes.applied.length} issue(s). ${fixes.skipped} had no fix.`);
+  await new Promise(r => setTimeout(r, 500)); // let LSP re-analyze after fixes
 } else {
-  console.log("No diagnostics — nothing to auto-fix.");
+  console.log("No auto-fixable issues.");
 }
 
 // ── Phase 0b: LSP recon ─────────────────────────────────────────────
