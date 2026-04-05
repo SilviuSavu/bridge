@@ -1,0 +1,25 @@
+{
+  "name": "vscode-bridge-mcp",
+  "version": "4.7.0",
+  "description": "MCP stdio server + CLI scripts for bridging Claude Code to VS Code's LSP and DAP capabilities",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/SilviuSavu/bridge.git"
+  },
+  "bin": {
+    "vscode-bridge-mcp": "./mcp-server.mjs",
+    "bridge-recon": "./scripts/recon.mjs",
+    "bridge-inspect": "./scripts/inspect.mjs",
+    "bridge-smart-debug": "./scripts/smart-debug.mjs",
+    "bridge-diagnostics": "./scripts/check-diagnostics.mjs"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "mcp-server.mjs",
+    "scripts/"
+  ]
+}
